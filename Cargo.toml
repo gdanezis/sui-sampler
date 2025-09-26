@@ -1,0 +1,25 @@
+[package]
+name = "sui-sampler"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "sui-sampler"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+object_store = { version = "0.11", features = ["http"] }
+bcs = "0.1"
+sui-types = { git = "https://github.com/mystenlabs/sui", package = "sui-types", branch = "mainnet" }
+sui-sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk", branch = "mainnet" }
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+env_logger = "0.11"
+futures = "0.3"
+log = "0.4"

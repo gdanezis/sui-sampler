@@ -1,0 +1,207 @@
+# SUI Checkpoint Sampler CLI Specification
+
+## Overview
+A Rust CLI program that randomly samples SUI checkpoints from a specified range and outputs their parsed data as JSON.
+
+## Command Line Interface
+
+### Program Name
+`sui-sampler`
+
+### Arguments
+- `--window <NUMBER>` (optional): Window size - number of checkpoints back from end checkpoint to start sampling from (default: 345000)
+- `--end-checkpoint <NUMBER>` (optional): Ending checkpoint sequence number (inclusive) (default: latest checkpoint from SUI network)
+- `--sample-count <NUMBER>` (optional): Number of checkpoints to randomly sample from the range (default: 100)
+- `--checkpoints-url <URL>` (optional): URL for checkpoint data store (default: "https://checkpoints.mainnet.sui.io")
+- `--output-format <FORMAT>` (optional): Output format - "json" or "pretty" (default: "json")
+- `--seed <NUMBER>` (optional): Random seed for reproducible sampling
+- `--concurrent <NUMBER>` (optional): Number of concurrent downloads (default: 10)
+
+### Example Usage
+```bash
+sui-sampler --window 1000 --end-checkpoint 2000 --sample-count 5
+sui-sampler --window 1000 --end-checkpoint 2000 --sample-count 10 --seed 42 --output-format pretty
+sui-sampler --sample-count 5  # Uses default window of 345000 checkpoints back from latest
+sui-sampler --window 50000 --sample-count 10 --seed 42  # Custom window with auto-detected end
+```
+
+## Validation Rules
+1. `window` must be > 0
+2. `sample-count` must be <= (`end-checkpoint` - `start-checkpoint` + 1) where `start-checkpoint` = max(0, `end-checkpoint` - `window`)
+3. `sample-count` must be > 0
+4. All checkpoint numbers must be valid u64 values
+5. `concurrent` must be > 0 and <= 100
+6. When `window` > `end-checkpoint`, a warning is displayed but execution continues with `start-checkpoint` = 0
+
+## Processing Flow
+1. **Parse CLI arguments** using clap
+2. **Fetch latest checkpoint** from SUI network if `end-checkpoint` not specified using SUI SDK
+3. **Calculate start checkpoint** as `end-checkpoint - window` (using saturating subtraction)
+4. **Validate arguments** according to rules above
+5. **Generate random sample** of checkpoint numbers in range [start, end]
+   - Use specified seed if provided for reproducible results
+   - Ensure no duplicates in sample
+6. **Download checkpoints** concurrently from checkpoint store
+   - Use object_store HTTP client
+   - Respect concurrency limit
+   - Handle download failures gracefully with retry logic (up to 3 attempts)
+7. **Parse checkpoint data** using BCS deserialization
+8. **Format byte arrays as hex** in JSON output for better readability
+9. **Output JSON** to stdout with sampled checkpoint data
+
+## Output Format
+
+### JSON Structure
+```json
+{
+  "metadata": {
+    "start_checkpoint": 999500,
+    "end_checkpoint": 1000000,
+    "sample_count": 5,
+    "sampled_checkpoints": [999567, 999789, 999890, 999934, 999999],
+    "seed": 42,
+    "timestamp": "2025-09-25T12:34:56Z"
+  },
+  "checkpoints": [
+    // Actual CheckpointData JSON structure from BCS deserialization
+    // Byte arrays are automatically converted to hex strings (e.g., "0x3a3000000100...")
+    // This improves readability compared to long integer arrays
+  ]
+}
+```
+
+### Hex Formatting
+- All byte arrays in the JSON output are automatically converted to hex strings with `0x` prefix
+- This includes fields like `signers_map`, `contents`, and other binary data
+- Significantly improves readability compared to arrays of integers
+- Example: `[58, 48, 0, 0, 1, ...]` becomes `"0x3a3000000100..."`
+
+## Dependencies (Cargo.toml additions)
+```toml
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+tokio = { version = "1.0", features = ["full"] }
+anyhow = "1.0"
+object_store = { version = "0.11", features = ["http"] }
+bcs = "0.1"
+sui-types = { git = "https://github.com/mystenlabs/sui", package = "sui-types", branch = "mainnet" }
+sui-sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk", branch = "mainnet" }
+chrono = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+```
+
+## Error Handling
+- Invalid CLI arguments: Exit with code 1, show usage
+- Window size of 0: Exit with code 1, show error message
+- Window larger than end checkpoint: Show warning but continue execution
+- Network errors during checkpoint download: Retry up to 3 times, then skip checkpoint with warning
+- Network errors during latest checkpoint fetch: Fall back to hardcoded default (60M) with warning
+- Parse errors: Skip checkpoint with warning to stderr
+- No successful downloads: Exit with code 2
+
+## Logging
+- Use env_logger for optional verbose output to stderr
+- Log download progress, errors, and timing information
+- JSON output goes to stdout only
+
+## Performance Requirements
+- Support sampling from ranges of up to 1M checkpoints
+- Handle concurrent downloads efficiently
+- Memory usage should scale with sample count, not total range size
+- Complete sampling of 100 checkpoints in under 60 seconds on typical network
+
+## Testing Requirements
+- Unit tests for sampling logic
+- Integration tests with mock checkpoint data
+- CLI argument validation tests
+- Error handling tests for network failures
+
+## Implementation Notes
+
+### Key APIs for Checkpoint Download and Processing
+
+Based on the example code in `checkpoint-download.rs`, the following APIs will be used:
+
+#### 1. HTTP Store Setup for Checkpoint Downloads
+```rust
+use object_store::http::HttpBuilder;
+use object_store::path::Path;
+
+// Create HTTP store client for downloading checkpoints
+let store = object_store::http::HttpBuilder::new()
+    .with_url("https://checkpoints.mainnet.sui.io")
+    .build()
+    .expect("Failed to build http store");
+```
+
+#### 2. Checkpoint Download
+```rust
+// Download checkpoint by sequence number
+let path = Path::from(format!("{}.chk", checkpoint_number));
+let response = store.get(&path).await.expect("Cannot download");
+let bytes = response.bytes().await.expect("No body");
+```
+
+#### 3. Checkpoint Data Parsing
+```rust
+use sui_types::full_checkpoint_content::CheckpointData;
+
+// Parse checkpoint data using BCS deserialization
+let (_, checkpoint) = bcs::from_bytes::<(u8, CheckpointData)>(&bytes)
+    .expect("Cannot parse");
+```
+
+#### 4. JSON Serialization
+```rust
+use serde_json;
+
+// Serialize CheckpointData to JSON
+let json_output = serde_json::to_string_pretty(&checkpoint)
+    .expect("Failed to serialize to JSON");
+```
+
+#### 5. Concurrent Processing Pattern
+```rust
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+
+// Process multiple checkpoints concurrently
+let mut futures = FuturesUnordered::new();
+for checkpoint_num in sampled_numbers {
+    let future = download_and_parse_checkpoint(checkpoint_num);
+    futures.push(future);
+}
+
+// Collect results
+let mut results = Vec::new();
+while let Some(result) = futures.next().await {
+    results.push(result);
+}
+```
+
+#### 6. Random Sampling Logic
+```rust
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
+
+// Generate random sample of checkpoint numbers
+let mut rng = if let Some(seed) = seed {
+    rand::rngs::StdRng::seed_from_u64(seed)
+} else {
+    rand::rngs::StdRng::from_entropy()
+};
+
+let range: Vec<u64> = (start_checkpoint..=end_checkpoint).collect();
+let sampled: Vec<u64> = range.choose_multiple(&mut rng, sample_count)
+    .cloned()
+    .collect();
+```
+
+### Key Data Structures
+
+- `CheckpointData`: Main structure containing checkpoint information and transactions
+- `Path`: Object store path for checkpoint files (format: `{sequence_number}.chk`)
+- File format: Binary BCS-serialized `(u8, CheckpointData)` tuples
+- Checkpoint URL pattern: `{base_url}/{sequence_number}.chk`
