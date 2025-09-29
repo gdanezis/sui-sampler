@@ -33,6 +33,27 @@ class TransactionData:
         self.gas_used = 0
         self.packages_used = set()
         self.json = None
+    
+    def as_string(self):
+        """String representation of the transaction data. the string contains all move calls, one per line."""
+        move_calls = []
+        if self.json:
+            transaction = self.json.get('transaction', {})
+            programmable_tx = _extract_programmable_transaction(transaction)
+            if programmable_tx and 'commands' in programmable_tx:
+                for command in programmable_tx['commands']:
+                    if 'MoveCall' in command:
+                        move_call = command['MoveCall']
+                        package_id = move_call['package']
+                        module = move_call['module']
+                        function = move_call['function']
+                        move_calls.append(f"{package_id}::{module}::{function}")
+        move_calls_str = "\n".join(move_calls) if move_calls else "No MoveCalls"
+        shared_objects_str = ", ".join(self.shared_objects) if self.shared_objects else "none"
+        return (f"Sender: {self.sender}\n"
+                f"Gas Used: {self.gas_used}\n"
+                f"Shared Objects: [{shared_objects_str}]\n"
+                f"Move Calls:\n{move_calls_str}\n")
 
 
 def _extract_programmable_transaction(transaction):
@@ -217,7 +238,7 @@ class CheckpointStats:
         print()
 
 
-    def free_tier_estimation(self, verbose=True):
+    def free_tier_estimation(self, verbose=True, penalty_type="squared"):
         """Estimate transactions that qualify for free tier pricing.
 
         A transaction qualifies for free tier if:
@@ -236,6 +257,9 @@ class CheckpointStats:
         if verbose:
             print("Free Tier Estimation:")
         
+        # open a log file to write all free tier transactions
+        high_cost_log_file = open("high_cost_transactions.log", "a")
+
         # Initialize counters
         free_tier_gas = 0
         non_free_tier_gas = 0
@@ -262,7 +286,18 @@ class CheckpointStats:
                 obj_id for obj_id in tx_data.shared_objects 
                 if self.shared_object_access_per_transaction.get(obj_id, 0) > 1
             ]
-            penalty_factor = len(multiple_use_shared_objects) ** 2
+            
+            if penalty_type == "squared":
+                penalty_factor = len(multiple_use_shared_objects) ** 2
+            else:
+                penalty_factor = sum(self.shared_object_access_per_transaction.get(obj_id, 0) - 1 for obj_id in multiple_use_shared_objects)
+
+            if penalty_factor > 1:
+                # Log high cost transaction details
+                high_cost_log_file.write(f"Transaction: {penalty_factor}x:\n")
+                high_cost_log_file.write(tx_data.as_string())
+                high_cost_log_file.write("\n")
+                high_cost_log_file.flush()
 
             # Update counters
             if qualifies_for_free_tier:
@@ -275,6 +310,8 @@ class CheckpointStats:
                 non_free_tier_count += 1
                 non_free_tier_transactions.append(tx_data)
         
+        high_cost_log_file.close()
+
         # Print summary if verbose
         if verbose:
             self._print_free_tier_summary(free_tier_count, free_tier_gas, 
