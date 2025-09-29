@@ -1,27 +1,49 @@
-'''
-Analyze checkpoints JSON.
+"""
+Analyze Sui blockchain checkpoints JSON data.
 
-- For each checkpoint in the standard input, parse the JSON data and populate the CheckpointStats.
-- After processing all checkpoints, print the CheckpointStats for each checkpoint.
+This script processes checkpoint data from stdin and analyzes:
+- Shared object usage patterns
+- Gas consumption per sender and package
+- Free tier transaction classification
+- Move call statistics
 
-'''
+For each checkpoint, it extracts ProgrammableTransaction data and provides
+comprehensive statistics on transaction patterns and costs.
+"""
 
 import json
 import sys
+from collections import defaultdict
 
 
 class TransactionData:
-    """Holds data for a single transaction."""
+    """Holds data for a single transaction.
+    
+    Attributes:
+        shared_objects: Set of shared object IDs that this transaction accesses
+        sender: Address of the transaction sender
+        gas_used: Total gas consumed by this transaction
+        packages_used: Set of package IDs used in MoveCall commands
+        json: Raw JSON data of the transaction for reference
+    """
     
     def __init__(self):
         self.shared_objects = set()
         self.sender = None
         self.gas_used = 0
         self.packages_used = set()
-        self.json = None  # Store the raw JSON of the transaction for reference
+        self.json = None
+
 
 def _extract_programmable_transaction(transaction):
-    """Extract ProgrammableTransaction from transaction data."""
+    """Extract ProgrammableTransaction from transaction data.
+    
+    Args:
+        transaction: Transaction JSON data
+        
+    Returns:
+        ProgrammableTransaction data if found, None otherwise
+    """
     if 'data' in transaction and isinstance(transaction['data'], list):
         for data_item in transaction['data']:
             if 'intent_message' in data_item:
@@ -34,35 +56,37 @@ def _extract_programmable_transaction(transaction):
                             return kind['ProgrammableTransaction']
     return None
 
-'''
-Maintain statistics about each checkpoint processed.
 
-'''
 class CheckpointStats:
+    """Maintains statistics about transactions processed in a checkpoint.
+    
+    Tracks shared object access patterns, gas usage by sender and package,
+    and provides free tier analysis capabilities.
+    """
 
     def __init__(self):
-        # Maps the ID of a shared object to the number of transactions in the checkpoint that accessed it.
-        self.shared_object_access_per_transaction = {}
+        # Maps shared object ID to number of transactions that accessed it
+        self.shared_object_access_per_transaction = defaultdict(int)
 
-        # Gas used per sender address -- each transaction contributes only once (since it only has a single sender).
-        self.gas_used_per_sender = {}
-        self.transaction_count_per_sender = {}
+        # Gas usage and transaction counts per sender
+        self.gas_used_per_sender = defaultdict(int)
+        self.transaction_count_per_sender = defaultdict(int)
 
-        # Gas used per function package - if a transaction uses a function from a package, 
-        # accumulate its gas here keyed per package. Note each transaction should only contribute once per package.
-        self.gas_used_per_package = {}
-        self.transaction_count_per_package = {}
+        # Gas usage and transaction counts per package
+        self.gas_used_per_package = defaultdict(int)
+        self.transaction_count_per_package = defaultdict(int)
 
-        # Number of transactions in the checkpoint
+        # Total transaction count and list of processed transactions
         self.transaction_count = 0
-
-        # The list of transactions processed
-        self.transactions = [] # List of TransactionData objects
+        self.transactions = []  # List of TransactionData objects
 
 
     def process_transaction(self, transaction_data):
-        """Process a single transaction and update statistics."""
-
+        """Process a single transaction and update statistics.
+        
+        Args:
+            transaction_data: Raw transaction JSON data
+        """
         # Extract transaction components
         transaction = transaction_data.get('transaction', {})
         effects = transaction_data.get('effects', {})
@@ -84,7 +108,7 @@ class CheckpointStats:
         tx_data = TransactionData()
         tx_data.sender = sender
         tx_data.gas_used = gas_used
-        tx_data.json = transaction_data  # Store the raw JSON of the transaction
+        tx_data.json = transaction_data
 
         # Extract shared objects from ProgrammableTransaction inputs (only mutable SharedObjects)
         if 'inputs' in programmable_tx:
@@ -103,42 +127,32 @@ class CheckpointStats:
                         package_id = self._normalize_package_id(move_call['package'])
                         tx_data.packages_used.add(package_id)
         
-        # Store the TransactionData
+        # Store the TransactionData and update counters
         self.transactions.append(tx_data)
-        
-        # Increment transaction count
         self.transaction_count += 1
         
-        # Update gas usage per sender
-        if sender not in self.gas_used_per_sender:
-            self.gas_used_per_sender[sender] = 0
+        # Update gas usage and transaction counts
         self.gas_used_per_sender[sender] += gas_used
-        
-        # Update transaction count per sender
-        if sender not in self.transaction_count_per_sender:
-            self.transaction_count_per_sender[sender] = 0
         self.transaction_count_per_sender[sender] += 1
         
         # Update shared object access count
         for shared_obj_id in tx_data.shared_objects:
-            if shared_obj_id not in self.shared_object_access_per_transaction:
-                self.shared_object_access_per_transaction[shared_obj_id] = 0
             self.shared_object_access_per_transaction[shared_obj_id] += 1
         
-        # Update gas usage per package
+        # Update package usage statistics
         for package_id in tx_data.packages_used:
-            if package_id not in self.gas_used_per_package:
-                self.gas_used_per_package[package_id] = 0
             self.gas_used_per_package[package_id] += gas_used
-        
-        # Update transaction count per package
-        for package_id in tx_data.packages_used:
-            if package_id not in self.transaction_count_per_package:
-                self.transaction_count_per_package[package_id] = 0
             self.transaction_count_per_package[package_id] += 1
 
     def _extract_sender(self, transaction):
-        """Extract sender address from transaction data."""
+        """Extract sender address from transaction data.
+        
+        Args:
+            transaction: Transaction JSON data
+            
+        Returns:
+            Sender address string if found, None otherwise
+        """
         if 'data' in transaction and isinstance(transaction['data'], list):
             for data_item in transaction['data']:
                 if 'intent_message' in data_item:
@@ -150,24 +164,41 @@ class CheckpointStats:
         return None
 
     def _calculate_gas_used(self, effects):
-        """Calculate total gas used from effects."""
+        """Calculate total gas used from effects.
+        
+        Args:
+            effects: Transaction effects JSON data
+            
+        Returns:
+            Total gas used (computation + storage costs)
+        """
         if 'V2' in effects:
             gas_used = effects['V2'].get('gas_used', {})
             computation = int(gas_used.get('computationCost', '0'))
             storage = int(gas_used.get('storageCost', '0'))
-            rebate = int(gas_used.get('storageRebate', '0'))
-            non_refundable = int(gas_used.get('nonRefundableStorageFee', '0'))
-            return computation + storage # NOTE: on purpose ignore rebate and non_refundable
+            # NOTE: Intentionally ignore rebate and non_refundable for this calculation
+            return computation + storage
         return 0
 
     def _normalize_package_id(self, package_id):
-        """Normalize package ID format to ensure consistency."""
+        """Normalize package ID format to ensure consistency.
+        
+        Args:
+            package_id: Package ID string
+            
+        Returns:
+            Normalized package ID with 0x prefix
+        """
         if package_id and not package_id.startswith('0x'):
             return f'0x{package_id}'
         return package_id
 
     def print_stats(self, checkpoint_sequence_number):
-        """Print statistics for this checkpoint."""
+        """Print statistics for this checkpoint.
+        
+        Args:
+            checkpoint_sequence_number: Sequence number of the checkpoint
+        """
         print(f"Checkpoint {checkpoint_sequence_number}:")
         print(f"  Transaction Count: {self.transaction_count}")
         print(f"  Shared Object Access Count: {len(self.shared_object_access_per_transaction)}")
@@ -183,59 +214,56 @@ class CheckpointStats:
         for package, gas in sorted(self.gas_used_per_package.items()):
             tx_count = self.transaction_count_per_package.get(package, 0)
             print(f"    {package}: {gas} gas units ({tx_count} transactions)")
-        
-        # Add free tier estimation
         print()
 
 
     def free_tier_estimation(self, verbose=True):
-        """Go through all the transactions, and estimate how many would go in a free tier.
+        """Estimate transactions that qualify for free tier pricing.
 
-        A transaction goes into a free tier if it only uses shared objects that are accessed once in the checkpoint.
-        And only one transaction per sender can qualify for free tier if it uses shared objects.
-        For each transaction print the gas used, and whether it qualifies for free tier.
-        Then sum up all the gas used by free tier transactions, and all the gas used by non-free tier transactions and print them.
+        A transaction qualifies for free tier if:
+        1. It uses no shared objects, OR
+        2. All shared objects it uses are accessed only once in the checkpoint, AND
+        3. The sender has only one transaction in the checkpoint (if using shared objects)
 
+        Args:
+            verbose: Whether to print detailed transaction information
+            
+        Returns:
+            Tuple of (free_tier_count, free_tier_gas, non_free_tier_count, 
+                     non_free_tier_gas, counterfactual_non_free_tier_gas,
+                     free_tier_transactions, non_free_tier_transactions)
         """
         if verbose:
             print("Free Tier Estimation:")
         
+        # Initialize counters
         free_tier_gas = 0
         non_free_tier_gas = 0
         free_tier_count = 0
         non_free_tier_count = 0
+        counterfactual_non_free_tier_gas = 0
 
         free_tier_transactions = []
         non_free_tier_transactions = []
         
         for i, tx_data in enumerate(self.transactions):
-            # Check if transaction qualifies for free tier
-            qualifies_for_free_tier = True
+            # Determine if transaction qualifies for free tier
+            qualifies_for_free_tier = self._qualifies_for_free_tier(tx_data)
             
-            # A transaction qualifies for free tier if ALL its shared objects are accessed only once
-            for shared_obj_id in tx_data.shared_objects:
-                access_count = self.shared_object_access_per_transaction.get(shared_obj_id, 0)
-                if access_count > 1:
-                    qualifies_for_free_tier = False
-                    break
-            
-            # If the transaction uses any shared object, and the sender has sent more than one transaction, it does not qualify for free tier
-            if len(tx_data.shared_objects) > 0:
-                sender_tx_count = self.transaction_count_per_sender.get(tx_data.sender, 0)
-                if sender_tx_count > 1:
-                    qualifies_for_free_tier = False
-
-            # If transaction uses no shared objects, it also qualifies for free tier
-            if len(tx_data.shared_objects) == 0:
-                qualifies_for_free_tier = True
-            
-            # Print transaction details
-            shared_objects_list = list(tx_data.shared_objects)
-            shared_objects_str = ", ".join(shared_objects_list) if shared_objects_list else "none"
-            tier_status = "FREE TIER" if qualifies_for_free_tier else "NON-FREE TIER"
+            # Print transaction details if verbose
             if verbose:
-                print(f"  Transaction {i+1}: {tx_data.gas_used} gas units, shared objects: [{shared_objects_str}] -> {tier_status}")
+                shared_objects_str = ", ".join(tx_data.shared_objects) if tx_data.shared_objects else "none"
+                tier_status = "FREE TIER" if qualifies_for_free_tier else "NON-FREE TIER"
+                print(f"  Transaction {i+1}: {tx_data.gas_used} gas units, "
+                      f"shared objects: [{shared_objects_str}] -> {tier_status}")
             
+            # Calculate counterfactual gas (with penalty for multiple shared object usage)
+            multiple_use_shared_objects = [
+                obj_id for obj_id in tx_data.shared_objects 
+                if self.shared_object_access_per_transaction.get(obj_id, 0) > 1
+            ]
+            penalty_factor = len(multiple_use_shared_objects) ** 2
+
             # Update counters
             if qualifies_for_free_tier:
                 free_tier_gas += tx_data.gas_used
@@ -243,32 +271,81 @@ class CheckpointStats:
                 free_tier_transactions.append(tx_data)
             else:
                 non_free_tier_gas += tx_data.gas_used
+                counterfactual_non_free_tier_gas += tx_data.gas_used * penalty_factor
                 non_free_tier_count += 1
                 non_free_tier_transactions.append(tx_data)
         
-        # Print summary
-        total_gas = free_tier_gas + non_free_tier_gas
+        # Print summary if verbose
         if verbose:
-            print(f"  Summary:")
-            print(f"    Free Tier: {free_tier_count} transactions, {free_tier_gas} gas units")
-            print(f"    Non-Free Tier: {non_free_tier_count} transactions, {non_free_tier_gas} gas units")
-            print(f"    Total: {free_tier_count + non_free_tier_count} transactions, {total_gas} gas units")
-            
-            if total_gas > 0:
-                free_tier_percentage = (free_tier_gas / total_gas) * 100
-                print(f"    Free Tier represents {free_tier_percentage:.1f}% of total gas usage")
-            print()
+            self._print_free_tier_summary(free_tier_count, free_tier_gas, 
+                                        non_free_tier_count, non_free_tier_gas)
 
-        return (free_tier_count, free_tier_gas, non_free_tier_count, non_free_tier_gas, free_tier_transactions, non_free_tier_transactions)
+        return (free_tier_count, free_tier_gas, non_free_tier_count, non_free_tier_gas, 
+                counterfactual_non_free_tier_gas, free_tier_transactions, non_free_tier_transactions)
+
+    def _qualifies_for_free_tier(self, tx_data):
+        """Check if a transaction qualifies for free tier pricing.
+        
+        Args:
+            tx_data: TransactionData object
+            
+        Returns:
+            True if transaction qualifies for free tier, False otherwise
+        """
+        # If transaction uses no shared objects, it qualifies for free tier
+        if not tx_data.shared_objects:
+            return True
+        
+        # Check if all shared objects are accessed only once
+        for shared_obj_id in tx_data.shared_objects:
+            access_count = self.shared_object_access_per_transaction.get(shared_obj_id, 0)
+            if access_count > 1:
+                return False
+        
+        # If using shared objects, sender must have only one transaction
+        sender_tx_count = self.transaction_count_per_sender.get(tx_data.sender, 0)
+        return sender_tx_count == 1
+
+    def _print_free_tier_summary(self, free_tier_count, free_tier_gas, 
+                                non_free_tier_count, non_free_tier_gas):
+        """Print summary of free tier estimation.
+        
+        Args:
+            free_tier_count: Number of free tier transactions
+            free_tier_gas: Total gas used by free tier transactions
+            non_free_tier_count: Number of non-free tier transactions
+            non_free_tier_gas: Total gas used by non-free tier transactions
+        """
+        total_gas = free_tier_gas + non_free_tier_gas
+        total_count = free_tier_count + non_free_tier_count
+        
+        print(f"  Summary:")
+        print(f"    Free Tier: {free_tier_count} transactions, {free_tier_gas} gas units")
+        print(f"    Non-Free Tier: {non_free_tier_count} transactions, {non_free_tier_gas} gas units")
+        print(f"    Total: {total_count} transactions, {total_gas} gas units")
+        
+        if total_gas > 0:
+            free_tier_percentage = (free_tier_gas / total_gas) * 100
+            print(f"    Free Tier represents {free_tier_percentage:.1f}% of total gas usage")
+        print()
 
 
 def move_call_details(transaction_list, cutoff_percentage=0.01):
-    """Take a list of TransactionData objects and return a mapping from package ID to list of (function, count) tuples."""
-    call_details = {}
+    """Analyze MoveCall commands from a list of transactions.
+    
+    Args:
+        transaction_list: List of TransactionData objects
+        cutoff_percentage: Minimum percentage threshold for inclusion in results
+        
+    Returns:
+        Dictionary mapping (package_id, module, function) tuples to percentage of total calls
+    """
+    call_details = defaultdict(int)
+    
     for tx in transaction_list:
-        # Go through the JSON, and extract MoveCall commands
         if not tx.json:
             continue
+            
         transaction = tx.json.get('transaction', {})
         programmable_tx = _extract_programmable_transaction(transaction)
         if not programmable_tx or 'commands' not in programmable_tx:
@@ -281,80 +358,68 @@ def move_call_details(transaction_list, cutoff_percentage=0.01):
                 module = move_call['module']
                 function = move_call['function']
                 full_call_name = (package_id, module, function)
-
-                if full_call_name not in call_details:
-                    call_details[full_call_name] = 0
                 call_details[full_call_name] += 1
     
-    # Filter the call_details to only include those with count > cutoff_percentage
+    # Filter by cutoff percentage and convert to percentages
     total_calls = sum(call_details.values())
-    call_details = {k: v for k, v in call_details.items() if (v / total_calls) > cutoff_percentage}
-
-    # Substitute values with fractions
-    call_details = {k: v / total_calls for k, v in call_details.items()}
-
-    return call_details
+    if total_calls == 0:
+        return {}
+    
+    filtered_calls = {
+        k: v / total_calls 
+        for k, v in call_details.items() 
+        if (v / total_calls) > cutoff_percentage
+    }
+    
+    return filtered_calls
 
 def main():
     """Main function to process JSON from stdin."""
     try:
-        # Read JSON from stdin
+        # Read and parse JSON from stdin
         data = json.load(sys.stdin)
         
         # Process each checkpoint
         checkpoints = data.get('checkpoints', [])
-        free_tier_stats = [] 
+        free_tier_stats = []
         
         for checkpoint in checkpoints:
             # Create stats tracker for this checkpoint
             stats = CheckpointStats()
-            
-            # Get checkpoint sequence number
-            sequence_number = checkpoint.get('checkpoint_summary', {}).get('data', {}).get('sequence_number', 'unknown')
             
             # Process each transaction in the checkpoint
             transactions = checkpoint.get('transactions', [])
             for transaction in transactions:
                 stats.process_transaction(transaction)
             
-            # Print statistics for this checkpoint
-            free_tier_stats += [stats.free_tier_estimation(verbose=False)]
+            # Collect free tier statistics
+            free_tier_stats.append(stats.free_tier_estimation(verbose=False))
     
-        # Compute the overall free tier statistics across all checkpoints
+        # Aggregate statistics across all checkpoints
         total_free_tier_count = sum(x[0] for x in free_tier_stats)
         total_free_tier_gas = sum(x[1] for x in free_tier_stats)
         total_non_free_tier_count = sum(x[2] for x in free_tier_stats)
         total_non_free_tier_gas = sum(x[3] for x in free_tier_stats)
+        total_counterfactual_gas = sum(x[4] for x in free_tier_stats)
 
-        # Make lists of all free tier and non-free tier transactions
+        # Collect all transactions by tier
         all_free_tier_transactions = []
         all_non_free_tier_transactions = []
         for x in free_tier_stats:
-            all_free_tier_transactions += x[4]
-            all_non_free_tier_transactions += x[5]
+            all_free_tier_transactions.extend(x[5])
+            all_non_free_tier_transactions.extend(x[6])
         
-        free_call_details = move_call_details(all_free_tier_transactions, cutoff_percentage=0.001)
-        non_free_call_details = move_call_details(all_non_free_tier_transactions, cutoff_percentage=0.001)
+        # Analyze MoveCall patterns
+        free_call_details = move_call_details(all_free_tier_transactions, cutoff_percentage=0.0035)
+        non_free_call_details = move_call_details(all_non_free_tier_transactions, cutoff_percentage=0.0035)
 
-        print("Overall Free Tier Estimation Across All Checkpoints:")
-        print(f"    Free Tier: {total_free_tier_count} transactions, {total_free_tier_gas} gas units")
-        print(f"    Non-Free Tier: {total_non_free_tier_count} transactions, {total_non_free_tier_gas} gas units")
-        total_gas = total_free_tier_gas + total_non_free_tier_gas
-        print(f"    Total: {total_free_tier_count + total_non_free_tier_count} transactions, {total_gas} gas units")
-        if total_gas > 0:
-            free_tier_percentage = (total_free_tier_gas / total_gas) * 100
-            print(f"    Free Tier represents {free_tier_percentage:.1f}% of total gas usage")
-        print()
+        # Print overall summary
+        _print_overall_summary(total_free_tier_count, total_free_tier_gas,
+                              total_non_free_tier_count, total_non_free_tier_gas,
+                              total_counterfactual_gas)
 
-        print("Move Call Details for Free Tier Transactions (cutoff >0.1%):")
-        for (package_id, module, function), percentage in sorted(free_call_details.items(), key=lambda x: x[1], reverse=True):
-            print(f"    {percentage:.2%} {package_id}::{module}::{function}")
-        print()
-
-        print("Move Call Details for Non-Free Tier Transactions (cutoff >0.1%):")
-        for (package_id, module, function), percentage in sorted(non_free_call_details.items(), key=lambda x: x[1], reverse=True):
-            print(f"    {percentage:.2%} {package_id}::{module}::{function}")
-        print()
+        # Print MoveCall analysis
+        _print_move_call_analysis(free_call_details, non_free_call_details)
 
     except json.JSONDecodeError as e:
         print(f"Error parsing JSON: {e}", file=sys.stderr)
@@ -362,6 +427,53 @@ def main():
     except Exception as e:
         print(f"Error processing data: {e}", file=sys.stderr)
         sys.exit(1)
+
+
+def _print_overall_summary(free_count, free_gas, non_free_count, non_free_gas, counterfactual_gas):
+    """Print overall statistics summary.
+    
+    Args:
+        free_count: Total free tier transaction count
+        free_gas: Total free tier gas usage
+        non_free_count: Total non-free tier transaction count  
+        non_free_gas: Total non-free tier gas usage
+        counterfactual_gas: Counterfactual gas with penalties
+    """
+    total_gas = free_gas + non_free_gas
+    total_count = free_count + non_free_count
+    
+    print("Overall Free Tier Estimation Across All Checkpoints:")
+    print(f"    Free Tier: {free_count} transactions, {free_gas} gas units")
+    print(f"    Non-Free Tier: {non_free_count} transactions, {non_free_gas} gas units")
+    print(f"    Total: {total_count} transactions, {total_gas} gas units")
+    
+    if total_gas > 0:
+        penalty_multiplier = counterfactual_gas / total_gas
+        free_tier_percentage = (free_gas / total_gas) * 100
+        print(f"    Counterfactual Non-Free Tier Gas (with multiple shared object usage penalty): "
+              f"{counterfactual_gas} gas units - ie {penalty_multiplier:.1f}x")
+        print(f"    Free Tier represents {free_tier_percentage:.1f}% of total gas usage")
+    print()
+
+
+def _print_move_call_analysis(free_call_details, non_free_call_details):
+    """Print MoveCall pattern analysis.
+    
+    Args:
+        free_call_details: Dictionary of free tier call patterns
+        non_free_call_details: Dictionary of non-free tier call patterns
+    """
+    print("Move Call Details for Free Tier Transactions (cutoff >0.1%):")
+    for (package_id, module, function), percentage in sorted(free_call_details.items(), 
+                                                            key=lambda x: x[1], reverse=True):
+        print(f"    {percentage:.2%} {package_id}::{module}::{function}")
+    print()
+
+    print("Move Call Details for Non-Free Tier Transactions (cutoff >0.1%):")
+    for (package_id, module, function), percentage in sorted(non_free_call_details.items(), 
+                                                            key=lambda x: x[1], reverse=True):
+        print(f"    {percentage:.2%} {package_id}::{module}::{function}")
+    print()
 
 
 if __name__ == '__main__':
