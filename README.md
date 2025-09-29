@@ -100,6 +100,52 @@ Extract transaction data from all checkpoints:
 ./sui-sampler --sample-count 10 | jq '.checkpoints[].transactions[]'
 ```
 
+## Examples
+
+The `examples/` directory contains Python scripts for analyzing sui-sampler output:
+
+### extract_name_frequency.py
+
+Analyzes checkpoint JSON data to extract and report frequency statistics for:
+- **MoveCall Functions**: All Move function calls from transactions
+- **Input Object Types**: Types of objects used as transaction inputs  
+- **Event Types**: Events emitted by transactions
+- **Unique Sender Tracking**: Number of unique wallet addresses using each function/type
+- **Package Information**: Human-readable names and verticals for packages
+
+#### Usage
+```bash
+# Analyze current network activity
+./target/release/sui-sampler --sample-count 100 | python3 examples/extract_name_frequency.py
+
+# Analyze saved checkpoint data
+python3 examples/extract_name_frequency.py < checkpoint_data.json
+```
+
+#### Example Output
+```
+Package: 0x2c8d603bc51326b8c13cef9dd07031a408a48dddb541963357661df5d3204809 - DeepBook (DeFi) (Total: 317 occurrences)
+----------------------------------------------------------------------------------------------------------------------
+  MoveCall Functions (36 calls):
+       8  balance_manager::generate_proof_as_owner (1 unique senders)
+       8  pool::borrow_flashloan_base (5 unique senders)
+       5  pool::place_limit_order (2 unique senders)
+
+  Input Object Types (114 objects):
+      70  pool::Pool (24 unique senders)
+      43  balance_manager::BalanceManager (6 unique senders)
+
+  Event Types (167 events):
+      89  order_info::OrderInfo (2 unique senders)
+      45  order_info::OrderPlaced (2 unique senders)
+```
+
+This provides insights into:
+- Which protocols are most active (by transaction count)
+- User adoption patterns (unique senders per function)
+- Ecosystem diversity (DeFi, Gaming, Social, etc.)
+- Popular vs niche functionality
+
 ## Command Line Options
 
 | Option | Default | Description |

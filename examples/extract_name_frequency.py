@@ -155,7 +155,8 @@ def group_by_package(names_counter: Counter) -> Dict[str, Dict[str, int]]:
     return dict(package_groups)
 
 
-def print_combined_frequency_report(move_call_counter: Counter, input_object_counter: Counter, event_counter: Counter):
+def print_combined_frequency_report(move_call_counter: Counter, input_object_counter: Counter, event_counter: Counter,
+                                   move_call_senders: Dict, input_object_senders: Dict, event_senders: Dict):
     """Print a comprehensive frequency report organized by package."""
     
     # Load package names
@@ -203,7 +204,8 @@ def print_combined_frequency_report(move_call_counter: Counter, input_object_cou
             for func_name, count in sorted(functions.items(), key=lambda x: x[1], reverse=True):
                 # Remove package prefix to shorten the name
                 short_name = func_name.replace(f"{package}::", "")
-                print(f"    {count:>4}  {short_name}")
+                unique_senders = len(move_call_senders.get(func_name, set()))
+                print(f"    {count:>4}  {short_name} ({unique_senders} unique senders)")
             print()
         
         # Print Input Object types for this package
@@ -214,7 +216,8 @@ def print_combined_frequency_report(move_call_counter: Counter, input_object_cou
             for type_name, count in sorted(types.items(), key=lambda x: x[1], reverse=True):
                 # Remove package prefix to shorten the name
                 short_name = type_name.replace(f"{package}::", "")
-                print(f"    {count:>4}  {short_name}")
+                unique_senders = len(input_object_senders.get(type_name, set()))
+                print(f"    {count:>4}  {short_name} ({unique_senders} unique senders)")
             print()
         
         # Print Event types for this package
@@ -225,17 +228,23 @@ def print_combined_frequency_report(move_call_counter: Counter, input_object_cou
             for event_name, count in sorted(events.items(), key=lambda x: x[1], reverse=True):
                 # Remove package prefix to shorten the name
                 short_name = event_name.replace(f"{package}::", "")
-                print(f"    {count:>4}  {short_name}")
+                unique_senders = len(event_senders.get(event_name, set()))
+                print(f"    {count:>4}  {short_name} ({unique_senders} unique senders)")
             print()
         
         print()  # Extra line between packages
 
 
 def analyze_checkpoint_data(data):
-    """Analyze checkpoint data and extract name frequencies."""
+    """Analyze checkpoint data and extract name frequencies with unique senders."""
     move_call_names = Counter()
     input_object_names = Counter()
     event_names = Counter()
+    
+    # Track unique senders for each name
+    move_call_senders = defaultdict(set)
+    input_object_senders = defaultdict(set)
+    event_senders = defaultdict(set)
     
     checkpoints = data.get('checkpoints', [])
     
@@ -245,24 +254,39 @@ def analyze_checkpoint_data(data):
         for tx_data in transactions:
             transaction = tx_data.get('transaction', {})
             
+            # Extract sender address
+            sender = ''
+            if 'data' in transaction and isinstance(transaction['data'], list) and transaction['data']:
+                intent_message = transaction['data'][0].get('intent_message', {})
+                value = intent_message.get('value', {})
+                v1_data = value.get('V1', {})
+                sender = v1_data.get('sender', '')
+            
             # Extract MoveCall names from ProgrammableTransaction
             programmable_tx = extract_programmable_transaction(transaction)
             if programmable_tx:
                 call_names = extract_move_call_names(programmable_tx)
                 move_call_names.update(call_names)
+                for name in call_names:
+                    move_call_senders[name].add(sender)
             
             # Extract type names from input objects
             input_objects = tx_data.get('input_objects', [])
             input_type_names = extract_object_type_names(input_objects)
             input_object_names.update(input_type_names)
+            for name in input_type_names:
+                input_object_senders[name].add(sender)
             
             # Extract type names from events
             events = tx_data.get('events')
             if events:
                 event_type_names = extract_event_type_names(events)
                 event_names.update(event_type_names)
+                for name in event_type_names:
+                    event_senders[name].add(sender)
     
-    return move_call_names, input_object_names, event_names
+    return (move_call_names, input_object_names, event_names, 
+            move_call_senders, input_object_senders, event_senders)
 
 
 def main():
@@ -272,10 +296,13 @@ def main():
         data = json.load(sys.stdin)
         
         # Analyze the data
-        move_call_names, input_object_names, event_names = analyze_checkpoint_data(data)
+        result = analyze_checkpoint_data(data)
+        move_call_names, input_object_names, event_names = result[:3]
+        move_call_senders, input_object_senders, event_senders = result[3:]
         
         # Print combined frequency report
-        print_combined_frequency_report(move_call_names, input_object_names, event_names)
+        print_combined_frequency_report(move_call_names, input_object_names, event_names,
+                                      move_call_senders, input_object_senders, event_senders)
         
         # Print summary statistics
         print("Summary Statistics")
