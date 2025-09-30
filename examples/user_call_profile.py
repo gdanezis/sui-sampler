@@ -84,6 +84,7 @@ def extract_move_call_names(programmable_tx) -> List[str]:
                     if not package.startswith('0x'):
                         package = f'0x{package}'
                     names.append(f"{package}::{module}::{function}")
+                    names.append(f"{package}::{module}::-")
     return names
 
 
@@ -258,6 +259,64 @@ def write_outlier_sequences(outlier_senders: List[str], sender_calls: Dict[str, 
         print(f"  Warning: Could not write outlier sequences: {e}", file=sys.stderr)
 
 
+def generate_cluster_name(cluster_id: int, senders: List[str], sender_calls: Dict[str, Set[str]], package_names: Dict[str, tuple]) -> str:
+    """Generate a descriptive name for a cluster based on top move calls."""
+    if cluster_id == -1:
+        return "Outliers"
+    
+    # Count frequency of each call across all senders in the cluster
+    call_frequency = defaultdict(int)
+    for sender in senders:
+        for call in sender_calls[sender]:
+            call_frequency[call] += 1
+    
+    # Get top calls that appear in >25% of cluster members, limit to top 3
+    frequent_calls = [(call, freq) for call, freq in call_frequency.items() 
+                    if freq > len(senders) * 0.25]
+    frequent_calls = sorted(frequent_calls, key=lambda x: x[1], reverse=True)[:3]
+    
+    if not frequent_calls:
+        return f"Cluster_{cluster_id}"
+    
+    # Extract app names from the top calls
+    app_names = []
+    module_names = []
+    
+    for call, _ in frequent_calls:
+        # Extract package ID from call
+        package_id = call.split('::', 1)[0] if '::' in call else ''
+        
+        if package_id in package_names:
+            app_name, _ = package_names[package_id]
+            if app_name not in app_names:
+                app_names.append(app_name)
+        else:
+            # Extract module name (second part after package ID)
+            parts = call.split("::")
+            if len(parts) >= 2:
+                module_name = parts[1]
+                if module_name not in module_names:
+                    module_names.append(module_name)
+    
+    # Create cluster name - prefer app names over module names
+    if app_names:
+        name_parts = app_names
+    elif module_names:
+        name_parts = module_names
+    else:
+        # Fallback to first part of the most frequent call
+        first_call = frequent_calls[0][0]
+        first_part = first_call.split("::")[0] if "::" in first_call else first_call
+        name_parts = [first_part]
+    
+    # Join with '+' and limit length
+    cluster_name = "+".join(name_parts)
+    if len(cluster_name) > 30:  # Limit name length
+        cluster_name = cluster_name[:27] + "..."
+    
+    return cluster_name
+
+
 def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[str, Set[str]], top_n: int = 10):
     """Print detailed cluster analysis."""
     print("Sui Sender Call Pattern Clustering Analysis")
@@ -277,12 +336,15 @@ def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[st
         cluster_size = len(senders)
         percentage = (cluster_size / total_senders) * 100
         
+        # Generate cluster name
+        cluster_name = generate_cluster_name(cluster_id, senders, sender_calls, package_names)
+        
         if cluster_id == -1:
-            header = f"Outliers (Cluster -1): {cluster_size} senders ({percentage:.1f}% of all senders)"
+            header = f"{cluster_name}: {cluster_size} senders ({percentage:.1f}% of all senders)"
             # Write outlier sequences to file
             write_outlier_sequences(senders, sender_calls)
         else:
-            header = f"Cluster {cluster_id}: {cluster_size} senders ({percentage:.1f}% of all senders)"
+            header = f"{cluster_name} (Cluster {cluster_id}): {cluster_size} senders ({percentage:.1f}% of all senders)"
         
         print(f"{Colors.GREEN}{Colors.BOLD}{header}{Colors.END}")
         print("-" * 40)
@@ -463,14 +525,17 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
         cluster_size = len(senders)
         percentage = (cluster_size / total_senders) * 100
         
+        # Generate cluster name
+        cluster_name = generate_cluster_name(cluster_id, senders, sender_calls, package_names)
+        
         if cluster_id == -1:
             header_class = "cluster-header outlier-header"
-            header_text = f"Outliers ({cluster_size}, {percentage:.1f}%)"
+            header_text = f"{cluster_name} ({cluster_size}, {percentage:.1f}%)"
             # Write outlier sequences to file for HTML mode too
             write_outlier_sequences(senders, sender_calls)
         else:
             header_class = "cluster-header"
-            header_text = f"Cluster {cluster_id} ({cluster_size}, {percentage:.1f}%)"
+            header_text = f"{cluster_name} ({cluster_size}, {percentage:.1f}%)"
         
         html_content += f"""
         <div class="cluster">
