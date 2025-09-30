@@ -671,7 +671,7 @@ def main():
         
         # Perform clustering
         print(f"Performing DBSCAN clustering (min_samples={min_samples}, 0.25% of {len(filtered_sender_calls)} senders)...", file=sys.stderr)
-        clusters = cluster_senders(filtered_sender_calls, eps=0.85, min_samples=min_samples)
+        clusters = cluster_senders(filtered_sender_calls, eps=0.7, min_samples=min_samples)
         
         # Print results
         if html_mode:
