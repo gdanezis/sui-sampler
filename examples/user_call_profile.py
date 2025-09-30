@@ -88,20 +88,60 @@ def extract_move_call_names(programmable_tx) -> List[str]:
     return names
 
 
-def extract_sender_call_profiles(data) -> Dict[str, Set[str]]:
-    """Extract all move calls made by each sender."""
-    sender_calls = defaultdict(set)
+def extract_event_type_names(events) -> List[str]:
+    """Extract package::module::type names from event data."""
+    names = []
+    if events and 'data' in events:
+        for event in events['data']:
+            if 'type_' in event:
+                type_info = event['type_']
+                # Events have address, module, name directly in type_
+                package = type_info.get('address', '')
+                module = type_info.get('module', '')
+                name = type_info.get('name', '')
+                if package and module and name:
+                    # Normalize package ID to include 0x prefix
+                    if not package.startswith('0x'):
+                        package = f'0x{package}'
+                    names.append(f"{package}::{module}::{name}")
+    return names
+
+
+def is_system_package(package_id: str) -> bool:
+    """Check if a package ID is a system package (has at least 10 leading zeros)."""
+    if not package_id.startswith('0x'):
+        return False
     
-    # Common system functions to filter out (too generic for meaningful clustering)
-    system_functions_to_filter = {
-        '0x0000000000000000000000000000000000000000000000000000000000000002::coin::zero',
-        '0x0000000000000000000000000000000000000000000000000000000000000002::coin::from_balance',
-        '0x0000000000000000000000000000000000000000000000000000000000000002::coin::into_balance',
-        '0x0000000000000000000000000000000000000000000000000000000000000002::coin::value',
-        '0x0000000000000000000000000000000000000000000000000000000000000002::coin::split',
-        '0x0000000000000000000000000000000000000000000000000000000000000002::balance::zero',
-        '0x0000000000000000000000000000000000000000000000000000000000000002::balance::destroy_zero',
-    }
+    # Remove the '0x' prefix and count leading zeros
+    hex_part = package_id[2:]
+    leading_zeros = 0
+    for char in hex_part:
+        if char == '0':
+            leading_zeros += 1
+        else:
+            break
+    
+    return leading_zeros >= 10
+
+
+def filter_system_calls(calls: List[str]) -> List[str]:
+    """Filter out calls/events from system packages."""
+    filtered = []
+    for call in calls:
+        # Extract package ID from call (first part before ::)
+        if '::' in call:
+            package_id = call.split('::', 1)[0]
+            if not is_system_package(package_id):
+                filtered.append(call)
+        else:
+            # If no :: found, assume it's not a system call
+            filtered.append(call)
+    return filtered
+
+
+def extract_sender_call_profiles(data) -> Dict[str, Set[str]]:
+    """Extract all move calls and event types made by each sender, filtering out system packages."""
+    sender_calls = defaultdict(set)
     
     checkpoints = data.get('checkpoints', [])
     
@@ -126,9 +166,19 @@ def extract_sender_call_profiles(data) -> Dict[str, Set[str]]:
             programmable_tx = extract_programmable_transaction(transaction)
             if programmable_tx:
                 call_names = extract_move_call_names(programmable_tx)
-                # Filter out common system functions
-                filtered_calls = [call for call in call_names if call not in system_functions_to_filter]
+                # Filter out system package calls
+                filtered_calls = filter_system_calls(call_names)
                 sender_calls[sender].update(filtered_calls)
+            
+            # Extract event type names from events
+            events = tx_data.get('events')
+            if events:
+                event_type_names = extract_event_type_names(events)
+                # Filter out system package events and add "event:" prefix to distinguish from calls
+                filtered_events = filter_system_calls(event_type_names)
+                # Add "event:" prefix to distinguish from calls
+                prefixed_events = [f"event:{name}" for name in filtered_events]
+                sender_calls[sender].update(prefixed_events)
     
     return dict(sender_calls)
 
@@ -283,8 +333,14 @@ def generate_cluster_name(cluster_id: int, senders: List[str], sender_calls: Dic
     module_names = []
     
     for call, _ in frequent_calls:
-        # Extract package ID from call
-        package_id = call.split('::', 1)[0] if '::' in call else ''
+        # Handle both regular calls and event types
+        if call.startswith('event:'):
+            # Remove "event:" prefix and extract package ID
+            actual_call = call[6:]  # Remove "event:" prefix
+            package_id = actual_call.split('::', 1)[0] if '::' in actual_call else ''
+        else:
+            # Regular move call
+            package_id = call.split('::', 1)[0] if '::' in call else ''
         
         if package_id in package_names:
             app_name, _ = package_names[package_id]
@@ -292,7 +348,12 @@ def generate_cluster_name(cluster_id: int, senders: List[str], sender_calls: Dic
                 app_names.append(app_name)
         else:
             # Extract module name (second part after package ID)
-            parts = call.split("::")
+            if call.startswith('event:'):
+                actual_call = call[6:]  # Remove "event:" prefix
+                parts = actual_call.split("::")
+            else:
+                parts = call.split("::")
+            
             if len(parts) >= 2:
                 module_name = parts[1]
                 if module_name not in module_names:
@@ -367,26 +428,36 @@ def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[st
             frequent_calls = sorted(frequent_calls, key=lambda x: x[1], reverse=True)[:5]
             
             if frequent_calls:
-                print(f"  Top function calls (>25% of members):")
+                print(f"  Top function calls and events (>25% of members):")
                 for call, frequency in frequent_calls:
-                    # Extract package ID from call
-                    package_id = call.split('::', 1)[0] if '::' in call else ''
+                    # Handle both regular calls and event types
+                    if call.startswith('event:'):
+                        # Remove "event:" prefix and extract package ID
+                        actual_call = call[6:]  # Remove "event:" prefix
+                        package_id = actual_call.split('::', 1)[0] if '::' in actual_call else ''
+                        # Shorten the call name by removing package prefix for display
+                        short_call = "::".join(actual_call.split("::")[1:]) if "::" in actual_call else actual_call
+                        call_type = "[EVENT]"
+                    else:
+                        # Regular move call
+                        package_id = call.split('::', 1)[0] if '::' in call else ''
+                        # Shorten the call name by removing package prefix for display
+                        short_call = "::".join(call.split("::")[1:]) if "::" in call else call
+                        call_type = "[CALL]"
                     
-                    # Shorten the call name by removing package prefix for display
-                    short_call = "::".join(call.split("::")[1:]) if "::" in call else call
                     percentage = (frequency / len(senders)) * 100
                     
                     # Add package info if available
-                    call_display = short_call
+                    call_display = f"{call_type} {short_call}"
                     if package_id in package_names:
                         app_name, vertical = package_names[package_id]
-                        call_display = f"{short_call} [{Colors.RED}{app_name}{Colors.END} - {vertical}]"
+                        call_display = f"{call_type} {short_call} [{Colors.RED}{app_name}{Colors.END} - {vertical}]"
                     
                     print(f"    {frequency:>3}/{len(senders)} ({percentage:>5.1f}%) - {call_display}")
             else:
                 print(f"  No calls appear in >25% of cluster members")
             
-            print(f"  Total unique calls in cluster: {len(all_calls)}")
+            print(f"  Total unique calls and events in cluster: {len(all_calls)}")
         
         print()
 
@@ -415,8 +486,9 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             font-family: 'Segoe UI', sans-serif;
             line-height: 1.3;
             color: #333;
-            max-width: 1400px;
-            margin: 0 auto;
+            max-width: none;
+            width: 100%;
+            margin: 0;
             padding: 10px;
             background: #f5f5f5;
             font-size: 13px;
@@ -511,8 +583,34 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
         }}
         .grid-layout {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
             gap: 10px;
+            padding: 0 5px;
+        }}
+        
+        /* Responsive grid for different screen sizes */
+        @media (min-width: 768px) {{
+            .grid-layout {{
+                grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            }}
+        }}
+        
+        @media (min-width: 1200px) {{
+            .grid-layout {{
+                grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            }}
+        }}
+        
+        @media (min-width: 1600px) {{
+            .grid-layout {{
+                grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            }}
+        }}
+        
+        @media (min-width: 2000px) {{
+            .grid-layout {{
+                grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            }}
         }}
     </style>
 </head>
@@ -564,21 +662,31 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             if frequent_calls:
                 html_content += """
                 <div class="call-list">
-                    <strong>Top calls (>25%):</strong>
+                    <strong>Top calls and events (>25%):</strong>
 """
                 for call, frequency in frequent_calls:
-                    # Extract package ID from call
-                    package_id = call.split('::', 1)[0] if '::' in call else ''
+                    # Handle both regular calls and event types
+                    if call.startswith('event:'):
+                        # Remove "event:" prefix and extract package ID
+                        actual_call = call[6:]  # Remove "event:" prefix
+                        package_id = actual_call.split('::', 1)[0] if '::' in actual_call else ''
+                        # Shorten the call name by removing package prefix for display
+                        short_call = "::".join(actual_call.split("::")[1:]) if "::" in actual_call else actual_call
+                        call_type = "<strong>[EVENT]</strong>"
+                    else:
+                        # Regular move call
+                        package_id = call.split('::', 1)[0] if '::' in call else ''
+                        # Shorten the call name by removing package prefix for display
+                        short_call = "::".join(call.split("::")[1:]) if "::" in call else call
+                        call_type = "<strong>[CALL]</strong>"
                     
-                    # Shorten the call name by removing package prefix for display
-                    short_call = "::".join(call.split("::")[1:]) if "::" in call else call
                     call_percentage = (frequency / len(senders)) * 100
                     
                     # Add package info if available
-                    call_display = short_call
+                    call_display = f"{call_type} {short_call}"
                     if package_id in package_names:
                         app_name, vertical = package_names[package_id]
-                        call_display = f'{short_call} [<span class="app-name">{app_name}</span>]'
+                        call_display = f'{call_type} {short_call} [<span class="app-name">{app_name}</span>]'
                     
                     html_content += f"""
                     <div class="call-item">
@@ -589,13 +697,13 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             else:
                 html_content += """
                 <div class="stats">
-                    No calls >25% frequency
+                    No calls or events >25% frequency
                 </div>
 """
             
             html_content += f"""
             <div class="stats">
-                {len(all_calls)} unique calls
+                {len(all_calls)} unique calls and events
             </div>
 """
         
