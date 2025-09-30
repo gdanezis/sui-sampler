@@ -146,6 +146,54 @@ This provides insights into:
 - Ecosystem diversity (DeFi, Gaming, Social, etc.)
 - Popular vs niche functionality
 
+### user_call_profile.py
+
+Performs clustering analysis on user transaction patterns to identify similar user behaviors:
+- **User Profiling**: Extracts all Move calls made by each wallet address
+- **Behavioral Clustering**: Uses DBSCAN clustering with Jaccard distance to group similar users
+- **Pattern Discovery**: Identifies common usage patterns and user archetypes
+- **Outlier Detection**: Finds users with unique or rare transaction patterns
+
+#### Usage
+```bash
+# Analyze user behavior patterns
+./target/release/sui-sampler --sample-count 200 | python3 examples/user_call_profile.py
+
+# For virtual environment users
+./target/release/sui-sampler --sample-count 200 | .venv/bin/python examples/user_call_profile.py
+```
+
+#### Dependencies
+```bash
+pip install numpy scikit-learn
+```
+
+#### Example Output
+```
+Cluster 2: 34 senders
+----------------------------------------
+  Common calls across all members: 2
+    - token::join
+    - xfantv::claim_token
+  Total unique calls in cluster: 2
+
+Cluster 18: 6 senders  
+----------------------------------------
+  Common calls across all members: 5
+    - coin::zero
+    - cetus::swap_a2b
+    - flash_loan::flashloan_quote
+    - flash_loan::return_flashloan_quote
+    - deepbookv3::swap_b2a_v2
+  Total unique calls in cluster: 7
+```
+
+This reveals user behavior patterns such as:
+- **Social Users**: Cluster around token claiming and social features
+- **Arbitrage Traders**: Advanced DeFi users with flash loan patterns
+- **Protocol Specialists**: Users focused on specific protocols
+- **Power Users**: High-diversity transaction patterns across many protocols
+
 ## Command Line Options
 
 | Option | Default | Description |
