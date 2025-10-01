@@ -11,15 +11,16 @@ The distance metric used is the Jaccard distance (1 - |A ∩ B| / |A ∪ B|) whe
 A and B are the sets of calls made by two different senders.
 """
 
-import json
-import sys
 import csv
+import json
 import os
-import numpy as np
+import random
+import sys
 from collections import defaultdict
-from typing import Dict, Set, List, Tuple
+from typing import Dict, List, Set, Tuple
+
+import numpy as np
 from sklearn.cluster import DBSCAN
-from sklearn.metrics import pairwise_distances
 
 
 # ANSI color codes
@@ -54,7 +55,7 @@ def load_package_names(csv_path: str = 'examples/sui_package_name.csv') -> Dict[
     return package_names
 
 
-def extract_programmable_transaction(transaction):
+def extract_programmable_transaction(transaction: dict) -> dict:
     """Extract ProgrammableTransaction from transaction data."""
     if 'data' in transaction and isinstance(transaction['data'], list):
         for data_item in transaction['data']:
@@ -249,7 +250,6 @@ def plot_distance_distribution(sender_calls: Dict[str, Set[str]], sample_size: i
     senders = list(sender_calls.keys())
     if len(senders) > sample_size:
         # Sample for performance with large datasets
-        import random
         senders = random.sample(senders, sample_size)
     
     distances = []
@@ -293,7 +293,7 @@ def cluster_senders(sender_calls: Dict[str, Set[str]], eps: float = 0.5, min_sam
     return dict(clusters)
 
 
-def write_outlier_sequences(outlier_senders: List[str], sender_calls: Dict[str, Set[str]], filename: str = "outlier_sequences.txt"):
+def write_outlier_sequences(outlier_senders: List[str], sender_calls: Dict[str, Set[str]], filename: str = "outlier_sequences.txt") -> None:
     """Write outlier call sequences to a file, one line per outlier address."""
     try:
         with open(filename, 'w') as f:
@@ -378,7 +378,7 @@ def generate_cluster_name(cluster_id: int, senders: List[str], sender_calls: Dic
     return cluster_name
 
 
-def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[str, Set[str]], top_n: int = 10):
+def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[str, Set[str]], top_n: int = 10) -> None:
     """Print detailed cluster analysis."""
     print("Sui Sender Call Pattern Clustering Analysis")
     print("=" * 45)
@@ -462,7 +462,7 @@ def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[st
         print()
 
 
-def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str, Set[str]], filename: str = "cluster_analysis.html"):
+def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str, Set[str]], filename: str = "cluster_analysis.html") -> None:
     """Generate a pretty HTML file with clustering analysis."""
     
     # Load package names
@@ -486,7 +486,6 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             font-family: 'Segoe UI', sans-serif;
             line-height: 1.3;
             color: #333;
-            max-width: none;
             width: 100%;
             margin: 0;
             padding: 10px;
@@ -586,31 +585,6 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
             gap: 10px;
             padding: 0 5px;
-        }}
-        
-        /* Responsive grid for different screen sizes */
-        @media (min-width: 768px) {{
-            .grid-layout {{
-                grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-            }}
-        }}
-        
-        @media (min-width: 1200px) {{
-            .grid-layout {{
-                grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-            }}
-        }}
-        
-        @media (min-width: 1600px) {{
-            .grid-layout {{
-                grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-            }}
-        }}
-        
-        @media (min-width: 2000px) {{
-            .grid-layout {{
-                grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
-            }}
         }}
     </style>
 </head>
@@ -770,7 +744,7 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
         print(f"Error generating HTML file: {e}", file=sys.stderr)
 
 
-def print_summary_statistics(sender_calls: Dict[str, Set[str]], clusters: Dict[int, List[str]]):
+def print_summary_statistics(sender_calls: Dict[str, Set[str]], clusters: Dict[int, List[str]]) -> None:
     """Print summary statistics."""
     print("Summary Statistics")
     print("=" * 18)
@@ -806,7 +780,7 @@ def print_summary_statistics(sender_calls: Dict[str, Set[str]], clusters: Dict[i
         print(f"Largest cluster size: {max_cluster_size}")
 
 
-def main():
+def main() -> None:
     """Main function to process JSON from stdin and perform clustering analysis."""
     try:
         # Check for command line flags
