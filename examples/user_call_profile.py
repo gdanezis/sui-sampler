@@ -849,7 +849,7 @@ def generate_html_subcluster_analysis(cluster_members: List[str], sender_calls: 
     return html
 
 
-def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str, Set[str]], filename: str = "cluster_analysis.html") -> None:
+def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str, Set[str]], filename: str = "cluster_analysis.html", data=None) -> None:
     """Generate a pretty HTML file with clustering analysis."""
     
     # Load package names
@@ -1190,6 +1190,14 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
         html_content += "        </div>\n"
 
     # Add summary statistics
+    # Count checkpoints and transactions if data is available
+    num_checkpoints = 0
+    total_transactions = 0
+    if data:
+        checkpoints = data.get('checkpoints', [])
+        num_checkpoints = len(checkpoints)
+        total_transactions = sum(len(checkpoint.get('transactions', [])) for checkpoint in checkpoints)
+    
     total_unique_calls = len(set().union(*sender_calls.values())) if sender_calls else 0
     call_counts = [len(calls) for calls in sender_calls.values()]
     avg_calls_per_sender = sum(call_counts) / len(call_counts) if call_counts else 0
@@ -1211,6 +1219,14 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
         <div class="summary">
             <h2>Summary</h2>
             <div class="stat-grid">
+                <div class="stat-item">
+                    <div class="stat-value">{num_checkpoints}</div>
+                    <div class="stat-label">Checkpoints</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value">{total_transactions}</div>
+                    <div class="stat-label">Transactions</div>
+                </div>
                 <div class="stat-item">
                     <div class="stat-value">{total_senders}</div>
                     <div class="stat-label">Senders</div>
@@ -1250,10 +1266,19 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
         print(f"Error generating HTML file: {e}", file=sys.stderr)
 
 
-def print_summary_statistics(sender_calls: Dict[str, Set[str]], clusters: Dict[int, List[str]]) -> None:
+def print_summary_statistics(sender_calls: Dict[str, Set[str]], clusters: Dict[int, List[str]], data=None) -> None:
     """Print summary statistics."""
     print("Summary Statistics")
     print("=" * 18)
+    
+    # Count checkpoints and transactions if data is available
+    if data:
+        checkpoints = data.get('checkpoints', [])
+        num_checkpoints = len(checkpoints)
+        total_transactions = sum(len(checkpoint.get('transactions', [])) for checkpoint in checkpoints)
+        print(f"Checkpoints analyzed: {num_checkpoints}")
+        print(f"Transactions analyzed: {total_transactions}")
+        print()
     
     total_senders = len(sender_calls)
     total_unique_calls = len(set().union(*sender_calls.values())) if sender_calls else 0
@@ -1329,11 +1354,11 @@ def main() -> None:
         # Print results
         if html_mode:
             # Generate HTML output
-            generate_html_output(clusters, filtered_sender_calls)
+            generate_html_output(clusters, filtered_sender_calls, data=data)
         else:
             # Print to terminal
             print_cluster_analysis(clusters, filtered_sender_calls, top_n=10)
-            print_summary_statistics(filtered_sender_calls, clusters)
+            print_summary_statistics(filtered_sender_calls, clusters, data)
         
         # Optionally run eps analysis
         if analyze_eps:
