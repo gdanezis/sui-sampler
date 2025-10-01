@@ -293,6 +293,134 @@ def cluster_senders(sender_calls: Dict[str, Set[str]], eps: float = 0.5, min_sam
     return dict(clusters)
 
 
+def analyze_subcluster(cluster_members: List[str], sender_calls: Dict[str, Set[str]], 
+                      cluster_name: str, package_names: Dict[str, Tuple[str, str]]) -> Dict[int, List[str]]:
+    """Perform detailed sub-clustering analysis on a specific cluster with low cohesion."""
+    print(f"\n  {Colors.BOLD}Sub-cluster Analysis for {cluster_name}:{Colors.END}")
+    print("  " + "-" * 50)
+    
+    # Extract only the calls for this cluster
+    subcluster_calls = {sender: sender_calls[sender] for sender in cluster_members}
+    
+    # Use tighter clustering parameters for sub-clustering
+    eps = 0.4  # Tighter than default 0.7
+    min_samples = max(2, int(len(cluster_members) * 0.01))  # 1% of cluster size, min 2
+    
+    subclusters = cluster_senders(subcluster_calls, eps=eps, min_samples=min_samples)
+    
+    # Filter out tiny subclusters (less than 1% of original cluster)
+    min_subcluster_size = max(5, int(len(cluster_members) * 0.01))
+    significant_subclusters = {k: v for k, v in subclusters.items() 
+                             if k == -1 or len(v) >= min_subcluster_size}
+    
+    num_subclusters = len([k for k in significant_subclusters.keys() if k != -1])
+    
+    if num_subclusters <= 1:
+        print(f"  No meaningful sub-clusters found (tried eps={eps}, min_samples={min_samples})")
+        return {}
+    
+    print(f"  Found {num_subclusters} significant sub-clusters (eps={eps}, min_samples={min_samples})")
+    
+    # Sort subclusters by size
+    sorted_subclusters = sorted(significant_subclusters.items(), key=lambda x: len(x[1]), reverse=True)
+    
+    for sub_id, sub_senders in sorted_subclusters:
+        if sub_id == -1:
+            continue  # Skip outliers in subcluster analysis
+            
+        sub_size = len(sub_senders)
+        sub_percentage = (sub_size / len(cluster_members)) * 100
+        
+        # Generate name for this subcluster
+        sub_name = generate_cluster_name(sub_id, sub_senders, sender_calls, package_names)
+        
+        print(f"\n    {Colors.GREEN}{sub_name} (Sub {sub_id}): {sub_size} senders ({sub_percentage:.1f}% of {cluster_name}){Colors.END}")
+        
+        # Analyze this sub-cluster's specific patterns
+        call_frequency = defaultdict(int)
+        for sender in sub_senders:
+            for call in sender_calls[sender]:
+                call_frequency[call] += 1
+        
+        # Get calls that appear in >50% of this sub-cluster (higher threshold for subclusters)
+        frequent_calls = [(call, freq) for call, freq in call_frequency.items() 
+                         if freq > len(sub_senders) * 0.5]
+        frequent_calls = sorted(frequent_calls, key=lambda x: x[1], reverse=True)[:5]
+        
+        if frequent_calls:
+            print(f"      Top calls and events (>50% of sub-cluster):")
+            for call, frequency in frequent_calls:
+                # Handle both regular calls and event types
+                if call.startswith('event:'):
+                    actual_call = call[6:]
+                    package_id = actual_call.split('::', 1)[0] if '::' in actual_call else ''
+                    short_call = "::".join(actual_call.split("::")[1:]) if "::" in actual_call else actual_call
+                    call_type = "[EVENT]"
+                else:
+                    package_id = call.split('::', 1)[0] if '::' in call else ''
+                    short_call = "::".join(call.split("::")[1:]) if "::" in call else call
+                    call_type = "[CALL]"
+                
+                percentage = (frequency / len(sub_senders)) * 100
+                
+                # Add package info if available
+                call_display = f"{call_type} {short_call}"
+                if package_id in package_names:
+                    app_name, vertical = package_names[package_id]
+                    call_display = f"{call_type} {short_call} [{Colors.RED}{app_name}{Colors.END}]"
+                
+                print(f"        {frequency:>3}/{len(sub_senders)} ({percentage:>5.1f}%) - {call_display}")
+        else:
+            print(f"      No calls appear in >50% of sub-cluster members")
+    
+    # Analyze outliers from sub-clustering (senders that didn't fit into any sub-cluster)
+    outlier_senders = significant_subclusters.get(-1, [])
+    if outlier_senders:
+        outlier_count = len(outlier_senders)
+        outlier_percentage = (outlier_count / len(cluster_members)) * 100
+        
+        print(f"\n    {Colors.BOLD}Sub-cluster Outliers: {outlier_count} senders ({outlier_percentage:.1f}% of {cluster_name}){Colors.END}")
+        
+        # Analyze outlier call patterns
+        outlier_call_frequency = defaultdict(int)
+        for sender in outlier_senders:
+            for call in sender_calls[sender]:
+                outlier_call_frequency[call] += 1
+        
+        # Get top calls that appear in >25% of outliers (lower threshold since these are diverse)
+        outlier_frequent_calls = [(call, freq) for call, freq in outlier_call_frequency.items() 
+                                if freq > len(outlier_senders) * 0.25]
+        outlier_frequent_calls = sorted(outlier_frequent_calls, key=lambda x: x[1], reverse=True)[:5]
+        
+        if outlier_frequent_calls:
+            print(f"      Top calls and events in outliers (>25%):")
+            for call, frequency in outlier_frequent_calls:
+                # Handle both regular calls and event types
+                if call.startswith('event:'):
+                    actual_call = call[6:]
+                    package_id = actual_call.split('::', 1)[0] if '::' in actual_call else ''
+                    short_call = "::".join(actual_call.split("::")[1:]) if "::" in actual_call else actual_call
+                    call_type = "[EVENT]"
+                else:
+                    package_id = call.split('::', 1)[0] if '::' in call else ''
+                    short_call = "::".join(call.split("::")[1:]) if "::" in call else call
+                    call_type = "[CALL]"
+                
+                percentage = (frequency / len(outlier_senders)) * 100
+                
+                # Add package info if available
+                call_display = f"{call_type} {short_call}"
+                if package_id in package_names:
+                    app_name, vertical = package_names[package_id]
+                    call_display = f"{call_type} {short_call} [{Colors.RED}{app_name}{Colors.END}]"
+                
+                print(f"        {frequency:>3}/{len(outlier_senders)} ({percentage:>5.1f}%) - {call_display}")
+        else:
+            print(f"      No common patterns in outliers (too diverse)")
+    
+    return significant_subclusters
+
+
 def write_outlier_sequences(outlier_senders: List[str], sender_calls: Dict[str, Set[str]], filename: str = "outlier_sequences.txt") -> None:
     """Write outlier call sequences to a file, one line per outlier address."""
     try:
@@ -454,12 +582,185 @@ def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[st
                         call_display = f"{call_type} {short_call} [{Colors.RED}{app_name}{Colors.END} - {vertical}]"
                     
                     print(f"    {frequency:>3}/{len(senders)} ({percentage:>5.1f}%) - {call_display}")
+                
+                # Check cohesion - if the top call is <75%, do subcluster analysis
+                if frequent_calls and len(senders) >= 20:  # Only for clusters with 20+ members
+                    top_call_percentage = (frequent_calls[0][1] / len(senders)) * 100
+                    if top_call_percentage < 75.0:
+                        # This cluster has low cohesion, perform sub-cluster analysis
+                        analyze_subcluster(senders, sender_calls, cluster_name, package_names)
             else:
                 print(f"  No calls appear in >25% of cluster members")
             
             print(f"  Total unique calls and events in cluster: {len(all_calls)}")
         
         print()
+
+
+def generate_html_subcluster_analysis(cluster_members: List[str], sender_calls: Dict[str, Set[str]], 
+                                     cluster_name: str, package_names: Dict[str, Tuple[str, str]]) -> str:
+    """Generate HTML for subcluster analysis."""
+    # Extract only the calls for this cluster
+    subcluster_calls = {sender: sender_calls[sender] for sender in cluster_members}
+    
+    # Use tighter clustering parameters for sub-clustering
+    eps = 0.4
+    min_samples = max(2, int(len(cluster_members) * 0.01))
+    
+    subclusters = cluster_senders(subcluster_calls, eps=eps, min_samples=min_samples)
+    
+    # Filter out tiny subclusters
+    min_subcluster_size = max(5, int(len(cluster_members) * 0.01))
+    significant_subclusters = {k: v for k, v in subclusters.items() 
+                             if k == -1 or len(v) >= min_subcluster_size}
+    
+    num_subclusters = len([k for k in significant_subclusters.keys() if k != -1])
+    
+    if num_subclusters <= 1:
+        return ""
+    
+    html = f"""
+                <div class="subcluster-analysis">
+                    <h4>Sub-cluster Analysis ({num_subclusters} sub-clusters found)</h4>
+"""
+    
+    # Sort subclusters by size
+    sorted_subclusters = sorted(significant_subclusters.items(), key=lambda x: len(x[1]), reverse=True)
+    
+    for sub_id, sub_senders in sorted_subclusters:
+        if sub_id == -1:
+            continue
+            
+        sub_size = len(sub_senders)
+        sub_percentage = (sub_size / len(cluster_members)) * 100
+        
+        # Generate name for this subcluster
+        sub_name = generate_cluster_name(sub_id, sub_senders, sender_calls, package_names)
+        
+        html += f"""
+                    <div class="subcluster">
+                        <div class="subcluster-header">
+                            {sub_name} (Sub {sub_id}): {sub_size} senders ({sub_percentage:.1f}% of {cluster_name})
+                        </div>
+"""
+        
+        # Analyze this sub-cluster's patterns
+        call_frequency = defaultdict(int)
+        for sender in sub_senders:
+            for call in sender_calls[sender]:
+                call_frequency[call] += 1
+        
+        # Get calls that appear in >50% of this sub-cluster
+        frequent_calls = [(call, freq) for call, freq in call_frequency.items() 
+                         if freq > len(sub_senders) * 0.5]
+        frequent_calls = sorted(frequent_calls, key=lambda x: x[1], reverse=True)[:5]
+        
+        if frequent_calls:
+            html += """
+                        <div class="subcall-list">
+                            <strong>Top calls and events (>50%):</strong>
+"""
+            for call, frequency in frequent_calls:
+                # Handle both regular calls and event types
+                if call.startswith('event:'):
+                    actual_call = call[6:]
+                    package_id = actual_call.split('::', 1)[0] if '::' in actual_call else ''
+                    short_call = "::".join(actual_call.split("::")[1:]) if "::" in actual_call else actual_call
+                    call_type = "<strong>[EVENT]</strong>"
+                else:
+                    package_id = call.split('::', 1)[0] if '::' in call else ''
+                    short_call = "::".join(call.split("::")[1:]) if "::" in call else call
+                    call_type = "<strong>[CALL]</strong>"
+                
+                call_percentage = (frequency / len(sub_senders)) * 100
+                
+                # Add package info if available
+                call_display = f"{call_type} {short_call}"
+                if package_id in package_names:
+                    app_name, vertical = package_names[package_id]
+                    call_display = f'{call_type} {short_call} [<span class="app-name">{app_name}</span>]'
+                
+                html += f"""
+                            <div class="subcall-item">
+                                {frequency}/{len(sub_senders)} ({call_percentage:.0f}%) - {call_display}
+                            </div>
+"""
+            html += "                        </div>\n"
+        else:
+            html += """
+                        <div class="stats">
+                            No calls >50% frequency
+                        </div>
+"""
+        
+        html += "                    </div>\n"
+    
+    # Add outlier analysis for sub-clustering
+    outlier_senders = significant_subclusters.get(-1, [])
+    if outlier_senders:
+        outlier_count = len(outlier_senders)
+        outlier_percentage = (outlier_count / len(cluster_members)) * 100
+        
+        html += f"""
+                    <div class="subcluster subcluster-outliers">
+                        <div class="subcluster-header">
+                            Sub-cluster Outliers: {outlier_count} senders ({outlier_percentage:.1f}% of {cluster_name})
+                        </div>
+"""
+        
+        # Analyze outlier call patterns
+        outlier_call_frequency = defaultdict(int)
+        for sender in outlier_senders:
+            for call in sender_calls[sender]:
+                outlier_call_frequency[call] += 1
+        
+        # Get top calls that appear in >25% of outliers
+        outlier_frequent_calls = [(call, freq) for call, freq in outlier_call_frequency.items() 
+                                if freq > len(outlier_senders) * 0.25]
+        outlier_frequent_calls = sorted(outlier_frequent_calls, key=lambda x: x[1], reverse=True)[:5]
+        
+        if outlier_frequent_calls:
+            html += """
+                        <div class="subcall-list">
+                            <strong>Top calls and events in outliers (>25%):</strong>
+"""
+            for call, frequency in outlier_frequent_calls:
+                # Handle both regular calls and event types
+                if call.startswith('event:'):
+                    actual_call = call[6:]
+                    package_id = actual_call.split('::', 1)[0] if '::' in actual_call else ''
+                    short_call = "::".join(actual_call.split("::")[1:]) if "::" in actual_call else actual_call
+                    call_type = "<strong>[EVENT]</strong>"
+                else:
+                    package_id = call.split('::', 1)[0] if '::' in call else ''
+                    short_call = "::".join(call.split("::")[1:]) if "::" in call else call
+                    call_type = "<strong>[CALL]</strong>"
+                
+                call_percentage = (frequency / len(outlier_senders)) * 100
+                
+                # Add package info if available
+                call_display = f"{call_type} {short_call}"
+                if package_id in package_names:
+                    app_name, vertical = package_names[package_id]
+                    call_display = f'{call_type} {short_call} [<span class="app-name">{app_name}</span>]'
+                
+                html += f"""
+                            <div class="subcall-item">
+                                {frequency}/{len(outlier_senders)} ({call_percentage:.0f}%) - {call_display}
+                            </div>
+"""
+            html += "                        </div>\n"
+        else:
+            html += """
+                        <div class="stats">
+                            No common patterns in outliers (too diverse)
+                        </div>
+"""
+        
+        html += "                    </div>\n"
+    
+    html += "                </div>\n"
+    return html
 
 
 def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str, Set[str]], filename: str = "cluster_analysis.html") -> None:
@@ -586,6 +887,53 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             gap: 10px;
             padding: 0 5px;
         }}
+        .subcluster-analysis {{
+            margin-top: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border-left: 4px solid #007bff;
+        }}
+        .subcluster-analysis h4 {{
+            margin: 0 0 10px 0;
+            color: #495057;
+            font-size: 1.1em;
+        }}
+        .subcluster {{
+            background: white;
+            border: 1px solid #e9ecef;
+            border-radius: 3px;
+            margin: 8px 0;
+            padding: 8px;
+        }}
+        .subcluster-header {{
+            color: #17a2b8;
+            font-weight: bold;
+            margin-bottom: 6px;
+            font-size: 0.95em;
+        }}
+        .subcall-list {{
+            margin: 6px 0;
+        }}
+        .subcall-item {{
+            margin: 2px 0;
+            padding: 3px 6px;
+            background: #f1f3f4;
+            border-radius: 2px;
+            border-left: 2px solid #17a2b8;
+            font-size: 11px;
+        }}
+        .subcluster-outliers {{
+            border-left-color: #dc3545;
+            background: #fdf2f2;
+        }}
+        .subcluster-outliers .subcluster-header {{
+            color: #dc3545;
+        }}
+        .subcluster-outliers .subcall-item {{
+            border-left-color: #dc3545;
+            background: #f8d7da;
+        }}
     </style>
 </head>
 <body>
@@ -668,6 +1016,14 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
                     </div>
 """
                 html_content += "                </div>\n"
+                
+                # Check cohesion - if the top call is <75%, do subcluster analysis
+                if len(senders) >= 20:  # Only for clusters with 20+ members
+                    top_call_percentage = (frequent_calls[0][1] / len(senders)) * 100
+                    if top_call_percentage < 75.0:
+                        # This cluster has low cohesion, add sub-cluster analysis
+                        subcluster_html = generate_html_subcluster_analysis(senders, sender_calls, cluster_name, package_names)
+                        html_content += subcluster_html
             else:
                 html_content += """
                 <div class="stats">
