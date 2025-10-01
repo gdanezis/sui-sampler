@@ -437,6 +437,79 @@ def write_outlier_sequences(outlier_senders: List[str], sender_calls: Dict[str, 
         print(f"  Warning: Could not write outlier sequences: {e}", file=sys.stderr)
 
 
+def analyze_inter_cluster_distances(clusters: Dict[int, List[str]], 
+                                   sender_calls: Dict[str, Set[str]]) -> Dict[int, Dict[int, float]]:
+    """Analyze average distances between different clusters."""
+    package_names = load_package_names()
+    
+    # Generate names for all clusters for display
+    cluster_names = {}
+    for cluster_id, senders in clusters.items():
+        cluster_names[cluster_id] = generate_cluster_name(cluster_id, senders, sender_calls, package_names)
+    
+    # Calculate average distance between each pair of clusters
+    cluster_ids = list(clusters.keys())
+    cluster_distances = {}
+    
+    print(f"\n{Colors.BOLD}Inter-Cluster Distance Analysis{Colors.END}")
+    print("=" * 35)
+    
+    for cluster_id in cluster_ids:
+        cluster_distances[cluster_id] = {}
+        
+    for i in range(len(cluster_ids)):
+        for j in range(i + 1, len(cluster_ids)):
+            cluster1_id, cluster2_id = cluster_ids[i], cluster_ids[j]
+            cluster1_senders = clusters[cluster1_id]
+            cluster2_senders = clusters[cluster2_id]
+            
+            # Sample for performance if clusters are large
+            sample_size = min(100, len(cluster1_senders), len(cluster2_senders))
+            sample1 = random.sample(cluster1_senders, min(sample_size, len(cluster1_senders)))
+            sample2 = random.sample(cluster2_senders, min(sample_size, len(cluster2_senders)))
+            
+            # Calculate all pairwise distances
+            distances = []
+            for sender1 in sample1:
+                for sender2 in sample2:
+                    distance = jaccard_distance(sender_calls[sender1], sender_calls[sender2])
+                    distances.append(distance)
+            
+            if distances:
+                avg_distance = np.mean(distances)
+                
+                # Store bidirectional distances
+                cluster_distances[cluster1_id][cluster2_id] = avg_distance
+                cluster_distances[cluster2_id][cluster1_id] = avg_distance
+    
+    return cluster_distances
+
+
+def print_cluster_distances(cluster_id: int, cluster_name: str, cluster_distances: Dict[int, Dict[int, float]], 
+                          cluster_names: Dict[int, str]) -> None:
+    """Print distances from one cluster to all other clusters (only showing distances < 1.0)."""
+    if cluster_id not in cluster_distances:
+        return
+        
+    distances = cluster_distances[cluster_id]
+    if not distances:
+        return
+    
+    # Sort by distance (closest first) and filter for distances < 1.0
+    filtered_distances = [(other_id, dist) for other_id, dist in distances.items() if dist < 1.0]
+    
+    if not filtered_distances:
+        return  # No similar clusters to show
+    
+    sorted_distances = sorted(filtered_distances, key=lambda x: x[1])
+    
+    print(f"  Similar clusters (distance < 1.0):")
+    for other_cluster_id, distance in sorted_distances:
+        other_name = cluster_names.get(other_cluster_id, f"Cluster {other_cluster_id}")
+        print(f"    → {other_name}: {distance:.3f}")
+    print()
+
+
 def generate_cluster_name(cluster_id: int, senders: List[str], sender_calls: Dict[str, Set[str]], package_names: Dict[str, tuple]) -> str:
     """Generate a descriptive name for a cluster based on top move calls."""
     if cluster_id == -1:
@@ -518,6 +591,15 @@ def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[st
     # Calculate total number of senders for percentage calculation
     total_senders = len(sender_calls)
     
+    # Calculate inter-cluster distances first (if we have multiple clusters)
+    cluster_distances = {}
+    cluster_names = {}
+    if len(clusters) > 1:
+        cluster_distances = analyze_inter_cluster_distances(clusters, sender_calls)
+        # Generate cluster names for distance display
+        for cluster_id, senders in clusters.items():
+            cluster_names[cluster_id] = generate_cluster_name(cluster_id, senders, sender_calls, package_names)
+    
     # Sort clusters by size (largest first)
     sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
     
@@ -593,6 +675,10 @@ def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[st
                 print(f"  No calls appear in >25% of cluster members")
             
             print(f"  Total unique calls and events in cluster: {len(all_calls)}")
+            
+            # Show distances to similar clusters (< 1.0) right under each cluster
+            if cluster_distances and cluster_names:
+                print_cluster_distances(cluster_id, cluster_name, cluster_distances, cluster_names)
         
         print()
 
@@ -772,6 +858,15 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
     # Calculate total number of senders for percentage calculation
     total_senders = len(sender_calls)
     
+    # Calculate inter-cluster distances first (if we have multiple clusters)
+    cluster_distances = {}
+    cluster_names = {}
+    if len(clusters) > 1:
+        cluster_distances = analyze_inter_cluster_distances(clusters, sender_calls)
+        # Generate cluster names for distance display
+        for cluster_id, senders in clusters.items():
+            cluster_names[cluster_id] = generate_cluster_name(cluster_id, senders, sender_calls, package_names)
+    
     # Sort clusters by size (largest first)
     sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
     
@@ -934,6 +1029,30 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             border-left-color: #dc3545;
             background: #f8d7da;
         }}
+        .cluster-distances {{
+            margin: 10px 0;
+            padding: 8px;
+            background: #f1f3f4;
+            border-radius: 3px;
+            border-left: 3px solid #6c757d;
+        }}
+        .cluster-distances h4 {{
+            margin: 0 0 6px 0;
+            color: #495057;
+            font-size: 0.9em;
+            font-weight: bold;
+        }}
+        .distance-list {{
+            margin: 3px 0;
+        }}
+        .distance-item {{
+            margin: 2px 0;
+            padding: 3px 6px;
+            background: white;
+            border-radius: 2px;
+            border-left: 3px solid #6c757d;
+            font-size: 11px;
+        }}
     </style>
 </head>
 <body>
@@ -1034,6 +1153,37 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             html_content += f"""
             <div class="stats">
                 {len(all_calls)} unique calls and events
+            </div>
+"""
+            
+            # Add distance analysis for this cluster (only if distances < 1.0 exist)
+            if cluster_distances and cluster_names and cluster_id in cluster_distances:
+                distances = cluster_distances[cluster_id]
+                filtered_distances = [(other_id, dist) for other_id, dist in distances.items() if dist < 1.0]
+                
+                if filtered_distances:
+                    sorted_distances = sorted(filtered_distances, key=lambda x: x[1])
+                    
+                    html_content += """
+            <div class="cluster-distances">
+                <h4>Similar clusters (distance < 1.0):</h4>
+                <div class="distance-list">
+"""
+                    
+                    for other_cluster_id, distance in sorted_distances:
+                        other_name = cluster_names.get(other_cluster_id, f"Cluster {other_cluster_id}")
+                        # Color code by distance: closer to 0 = more similar (green), closer to 1 = more different (yellow)
+                        color_intensity = int(distance * 255)
+                        color = f"rgb({color_intensity}, {255-color_intensity}, 0)"
+                        
+                        html_content += f"""
+                    <div class="distance-item" style="border-left-color: {color};">
+                        → {other_name}: <strong>{distance:.3f}</strong>
+                    </div>
+"""
+                    
+                    html_content += """
+                </div>
             </div>
 """
         
