@@ -27,7 +27,9 @@ from sklearn.cluster import DBSCAN
 class Colors:
     GREEN = '\033[92m'
     RED = '\033[91m'
+    GREY = '\033[90m'
     BOLD = '\033[1m'
+    STRIKE = '\033[9m'
     END = '\033[0m'
 
 
@@ -602,22 +604,64 @@ def print_cluster_analysis(clusters: Dict[int, List[str]], sender_calls: Dict[st
     
     # Sort clusters by size (largest first)
     sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
-    
+    # Precompute interesting clusters for CLI display using the same rule as HTML
+    cluster_info = {}
     for cluster_id, senders in sorted_clusters:
-        cluster_size = len(senders)
-        percentage = (cluster_size / total_senders) * 100
+        size = len(senders)
+        call_frequency = defaultdict(int)
+        for sender in senders:
+            for call in sender_calls.get(sender, []):
+                call_frequency[call] += 1
+        # Apply same display filter as the UI: only consider calls that appear in >25% of members
+        filtered_calls = [(call, freq) for call, freq in call_frequency.items() if freq > size * 0.25]
+        top5 = sorted(filtered_calls, key=lambda x: x[1], reverse=True)[:5]
+        if size == 0:
+            interesting = False
+        else:
+            # If there are no calls passing the display filter, treat cluster as interesting
+            if not top5:
+                interesting = True
+            else:
+                # Cluster is interesting if any of the displayed top-5 calls is present in <95% of members
+                interesting = any((freq / size) < 0.95 for _, freq in top5)
+        cluster_info[cluster_id] = {"size": size, "interesting": interesting}
+
+    adjusted_total_senders = sum(info["size"] for info in cluster_info.values() if info["interesting"]) or total_senders
+
+    for cluster_id, senders in sorted_clusters:
+        info = cluster_info.get(cluster_id, {"size": len(senders), "interesting": True})
+        cluster_size = info["size"]
+
+        # Compute percentage: interesting clusters use the adjusted denominator
+        if info["interesting"]:
+            denom = adjusted_total_senders if adjusted_total_senders > 0 else total_senders
+            percentage = (cluster_size / denom) * 100
+        else:
+            percentage = (cluster_size / total_senders) * 100 if total_senders > 0 else 0
         
         # Generate cluster name
         cluster_name = generate_cluster_name(cluster_id, senders, sender_calls, package_names)
-        
-        if cluster_id == -1:
-            header = f"{cluster_name}: {cluster_size} senders ({percentage:.1f}% of all senders)"
-            # Write outlier sequences to file
-            write_outlier_sequences(senders, sender_calls)
+        # Build suffix: include percentage only for interesting clusters
+        if info["interesting"]:
+            if cluster_id == -1:
+                suffix = f": {cluster_size} senders ({percentage:.1f}% of interesting senders)"
+            else:
+                suffix = f" (Cluster {cluster_id}): {cluster_size} senders ({percentage:.1f}% of interesting senders)"
         else:
-            header = f"{cluster_name} (Cluster {cluster_id}): {cluster_size} senders ({percentage:.1f}% of all senders)"
-        
-        print(f"{Colors.GREEN}{Colors.BOLD}{header}{Colors.END}")
+            if cluster_id == -1:
+                suffix = f": {cluster_size} senders"
+            else:
+                suffix = f" (Cluster {cluster_id}): {cluster_size} senders"
+
+        # CLI: use green bold for interesting clusters, grey + strike-through name for not-interesting
+        if info["interesting"]:
+            header = f"{cluster_name}{suffix}"
+            print(f"{Colors.GREEN}{Colors.BOLD}{header}{Colors.END}")
+        else:
+            # Strike-through the name but keep the rest grey
+            struck = f"{Colors.GREY}{Colors.STRIKE}{cluster_name}{Colors.END}{Colors.GREY}"
+            header = f"{struck}{suffix}{Colors.END}"
+            print(header)
         print("-" * 40)
         
         if senders:
@@ -870,6 +914,37 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
     # Sort clusters by size (largest first)
     sorted_clusters = sorted(clusters.items(), key=lambda x: len(x[1]), reverse=True)
     
+    # Precompute which clusters are "interesting" (used to adjust percentage denominators)
+    # A cluster is interesting if among its top-5 calls (by frequency) at least one call
+    # is present in <95% of its members (i.e., there is some diversity). If the cluster
+    # has no calls, treat it as interesting by default.
+    cluster_info = {}
+    for cluster_id, senders in sorted_clusters:
+        size = len(senders)
+        call_frequency = defaultdict(int)
+        for sender in senders:
+            for call in sender_calls.get(sender, []):
+                call_frequency[call] += 1
+        # Apply same display filter as the UI: only consider calls that appear in >25% of members
+        filtered_calls = [(call, freq) for call, freq in call_frequency.items() if freq > size * 0.25]
+        top5 = sorted(filtered_calls, key=lambda x: x[1], reverse=True)[:5]
+        if size == 0:
+            interesting = False
+        else:
+            # If there are no calls passing the display filter, treat cluster as interesting
+            if not top5:
+                interesting = True
+            else:
+                # Cluster is interesting if any of the displayed top-5 calls is present in <95% of members
+                interesting = any((freq / size) < 0.95 for _, freq in top5)
+        cluster_info[cluster_id] = {"size": size, "interesting": interesting, "top5": top5}
+
+    # Adjusted total senders excludes non-interesting clusters so that percentages
+    # for interesting clusters are computed only over the interesting subset.
+    adjusted_total_senders = sum(info["size"] for info in cluster_info.values() if info["interesting"])
+    if adjusted_total_senders == 0:
+        adjusted_total_senders = total_senders
+
     html_content = f"""
 <!DOCTYPE html>
 <html lang="en">
@@ -910,6 +985,18 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             background: #28a745;
             color: white;
             border-radius: 3px;
+        }}
+        /* Not-interesting clusters: grey header and strike-through the name */
+        .cluster-header.not-interesting {{
+            background: #6c757d;
+            color: #ffffff;
+        }}
+        .cluster-header .cluster-name {{
+            text-decoration: none;
+        }}
+        .cluster-header.not-interesting .cluster-name {{
+            text-decoration: line-through;
+            color: #f8f9fa;
         }}
         .outlier-header {{
             background: #dc3545;
@@ -1053,6 +1140,60 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
             border-left: 3px solid #6c757d;
             font-size: 11px;
         }}
+        /* Print-specific styles to make the report printer-friendly */
+        @media print {{
+            body {{
+                background: white !important;
+                color: #000 !important;
+                padding: 0.5in !important;
+                font-size: 12pt !important;
+            }}
+
+            /* Keep clusters intact on a single page when possible */
+            .cluster {{
+                background: white !important;
+                border: 1px solid #000 !important;
+                box-shadow: none !important;
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+                -webkit-column-break-inside: avoid !important;
+            }}
+
+            /* Simplify headers (background colors often don't print) */
+            .cluster-header {{
+                background: none !important;
+                color: #000 !important;
+                font-size: 1em !important;
+                padding: 4px 0 !important;
+                border-bottom: 1px solid #000 !important;
+            }}
+
+            /* Make call / stat items printer-friendly */
+            .call-item, .stat-item, .subcall-item, .distance-item {{
+                background: transparent !important;
+                border-left-color: #000 !important;
+                color: #000 !important;
+                font-size: 10pt !important;
+                padding: 2px 4px !important;
+            }}
+
+            .cluster-distances {{
+                font-size: 10pt !important;
+                padding: 4px !important;
+            }}
+
+            /* Summary should not be split across pages */
+            .summary, .stat-grid {{
+                page-break-inside: avoid !important;
+                break-inside: avoid !important;
+            }}
+
+            /* Try to preserve colors when printing where supported */
+            * {{
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }}
+        }}
     </style>
 </head>
 <body>
@@ -1061,20 +1202,30 @@ def generate_html_output(clusters: Dict[int, List[str]], sender_calls: Dict[str,
 """
 
     for cluster_id, senders in sorted_clusters:
-        cluster_size = len(senders)
-        percentage = (cluster_size / total_senders) * 100
-        
-        # Generate cluster name
+        info = cluster_info.get(cluster_id, {"size": len(senders), "interesting": True})
+        cluster_size = info["size"]
+
+        # Compute percentage: interesting clusters use the adjusted denominator
+        if info["interesting"]:
+            denom = adjusted_total_senders if adjusted_total_senders > 0 else total_senders
+            percentage = (cluster_size / denom) * 100
+            header_class = "cluster-header"
+        else:
+            percentage = (cluster_size / total_senders) * 100 if total_senders > 0 else 0
+            header_class = "cluster-header not-interesting"
+
+        # Generate cluster name and wrap the name so we can strike-through only the name
         cluster_name = generate_cluster_name(cluster_id, senders, sender_calls, package_names)
+        if info.get("interesting", True):
+            header_text = f"<span class='cluster-name'>{cluster_name}</span> ({cluster_size}, {percentage:.1f}%)"
+        else:
+            # For not-interesting clusters we only show the count (no fraction)
+            header_text = f"<span class='cluster-name'>{cluster_name}</span> ({cluster_size})"
         
         if cluster_id == -1:
-            header_class = "cluster-header outlier-header"
-            header_text = f"{cluster_name} ({cluster_size}, {percentage:.1f}%)"
+            header_class += " outlier-header"
             # Write outlier sequences to file for HTML mode too
             write_outlier_sequences(senders, sender_calls)
-        else:
-            header_class = "cluster-header"
-            header_text = f"{cluster_name} ({cluster_size}, {percentage:.1f}%)"
         
         html_content += f"""
         <div class="cluster">
